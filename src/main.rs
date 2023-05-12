@@ -1,8 +1,11 @@
 use std::fs;
 use std::fmt;
 use std::env;
+use std::sync::Arc;
 
-#[derive(Debug)]
+const NUM_THREADS: usize = 4;
+
+#[derive(Debug,Clone,Copy)]
 enum ByteSearch {
     Byte(u8),
     WildCard
@@ -17,7 +20,7 @@ impl fmt::Display for ByteSearch {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BytePattern(Vec<ByteSearch>);
 
 impl BytePattern {
@@ -98,6 +101,7 @@ impl From<&str> for BytePattern {
 
 } // from &str
 
+#[derive(Clone)]
 struct Pattern {
     name: String,
     patterns: Vec<BytePattern>,
@@ -130,9 +134,16 @@ impl Pattern {
 
 }
 
+fn worker(tid: usize, patterns: &Vec<Pattern>, haystack: &Vec<u8>) {
+    println!("[thread {} launched, searching {} patterns]", tid, patterns.len());
+    for pattern in patterns {
+        pattern.search(haystack);
+    }
+}
+
 fn main() -> std::io::Result<()> {
     
-    let mut patterns = vec![];
+    let mut patterns = vec![vec![];NUM_THREADS];
 
     let args: Vec<String> = env::args().collect();
 
@@ -157,6 +168,7 @@ fn main() -> std::io::Result<()> {
     } else {
         println!("[+] reading patterns from directory {}", args[1]);
 
+        let mut idx = 0;
         // Get all files in target directory.
         // Replace "." with a more useful directory if needed.
         for entry in fs::read_dir(&args[1])? {
@@ -164,15 +176,34 @@ fn main() -> std::io::Result<()> {
             // Get path string.
             let path_str = path.to_str().unwrap();
             println!("[+] reading pattern from file {}", path_str);
-            patterns.push(Pattern::from_file(path_str));
+            patterns[idx].push(Pattern::from_file(path_str));
+            idx = (idx+1) % NUM_THREADS;
         }
 
         let haystack = fs::read(&args[2])?;
 
-        println!("\n\n[+] starting search...\n\n");
-        for pattern in patterns {
-            pattern.search(&haystack);
+        let patterns = Arc::new(patterns);
+        let haystack = Arc::new(haystack);
+        let mut handles = vec![];
+
+        let n_threads = if patterns.len() < NUM_THREADS {
+            patterns.len()
+        } else {
+            NUM_THREADS
+        };
+
+        for i in 0..n_threads {
+            let patterns = patterns.clone();
+            let haystack = haystack.clone();
+            handles.push(std::thread::spawn(move || {
+                worker(i, &patterns[i], &haystack)
+            }));
         }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
     }
 
     Ok(())
